@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+<title>一键导入 · 2024账单</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+  body {
+    background: #F5F7FA;
+    min-height: 100vh;
+    padding: 20px 16px;
+    display: flex;
+    justify-content: center;
+    color: #1E293B;
+  }
+  .box {
+    width: 100%;
+    max-width: 480px;
+    background: white;
+    border-radius: 20px;
+    padding: 24px 20px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+    border: 1px solid #E2E8F0;
+    height: fit-content;
+  }
+  h1 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .sub {
+    font-size: 0.82rem;
+    color: #94A3B8;
+    margin-bottom: 22px;
+    line-height: 1.6;
+  }
+  .info {
+    background: #F8FAFC;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    border: 1px solid #E2E8F0;
+  }
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.82rem;
+    padding: 4px 0;
+  }
+  .info-row .label { color: #94A3B8; }
+  .info-row .val { font-weight: 600; color: #1E293B; }
+
+  button {
+    width: 100%;
+    padding: 14px;
+    border-radius: 12px;
+    border: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.15s;
+    margin-bottom: 10px;
+  }
+  .primary {
+    background: #1E293B;
+    color: white;
+  }
+  .primary:hover { background: #3B82F6; }
+  .primary:disabled {
+    background: #CBD5E1;
+    cursor: not-allowed;
+  }
+  .secondary {
+    background: white;
+    color: #1E293B;
+    border: 1px solid #E2E8F0;
+  }
+  .secondary:hover { border-color: #3B82F6; color: #3B82F6; }
+
+  .result {
+    display: none;
+    margin-top: 18px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    line-height: 1.7;
+  }
+  .result.ok { display: block; background: #ECFDF5; color: #065F46; border: 1px solid #A7F3D0; }
+  .result.warn { display: block; background: #FFFBEB; color: #92400E; border: 1px solid #FDE68A; }
+  .result.err { display: block; background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }
+  .result strong { font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>📥 一键导入账单</h1>
+  <div class="sub">
+    把 YoYo 2024 年账单数据导入到记账本（当前账本）。<br>
+    重复记录会自动跳过，可放心多次点击。
+  </div>
+
+  <div class="info">
+    <div class="info-row">
+      <span class="label">目标账本</span>
+      <span class="val" id="bookName">读取中…</span>
+    </div>
+    <div class="info-row">
+      <span class="label">待导入条数</span>
+      <span class="val" id="pendingCount">-</span>
+    </div>
+  </div>
+
+  <button class="primary" id="importBtn" onclick="doImport()">开始导入</button>
+  <button class="secondary" onclick="window.close()">关闭页面</button>
+
+  <div class="result" id="result"></div>
+</div>
+
+<script>
+// ==================== 存储键（与记账本一致）====================
+const KEYS = {
+  BOOKS: 'h_books',
+  ACTIVE_BOOK: 'h_active_book',
+  EXPENSES: 'h_expenses_',
+  INCOMES: 'h_incomes_',
+  CAT_EXPENSE: 'h_cat_expense_',
+  CAT_INCOME: 'h_cat_income_'
+};
+
+// ==================== 账本读取 ====================
+function getBooks() {
+  try {
+    const raw = localStorage.getItem(KEYS.BOOKS);
+    if (!raw) return [{ id: 'b1', name: '默认账本' }];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) && arr.length ? arr : [{ id: 'b1', name: '默认账本' }];
+  } catch(e) { return [{ id: 'b1', name: '默认账本' }]; }
+}
+function getActiveBookId() {
+  const id = localStorage.getItem(KEYS.ACTIVE_BOOK);
+  const books = getBooks();
+  if (!id) return books[0].id;
+  if (books.some(b => b.id === id)) return id;
+  return books[0].id;
+}
+function getBookName(id) {
+  const b = getBooks().find(x => x.id === id);
+  return b ? b.name : '未知账本';
+}
+
+// ==================== 记录读写 ====================
+function getRecords(type, bookId) {
+  const key = (type === 'expense' ? KEYS.EXPENSES : KEYS.INCOMES) + bookId;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const d = JSON.parse(raw);
+    return Array.isArray(d) ? d : [];
+  } catch(e) { return []; }
+}
+function saveRecords(type, bookId, arr) {
+  const key = (type === 'expense' ? KEYS.EXPENSES : KEYS.INCOMES) + bookId;
+  localStorage.setItem(key, JSON.stringify(arr));
+}
+function getCategories(type, bookId) {
+  const key = (type === 'expense' ? KEYS.CAT_EXPENSE : KEYS.CAT_INCOME) + bookId;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch(e) { return []; }
+}
+function saveCategories(type, bookId, arr) {
+  const key = (type === 'expense' ? KEYS.CAT_EXPENSE : KEYS.CAT_INCOME) + bookId;
+  localStorage.setItem(key, JSON.stringify(arr));
+}
+
+// ==================== 工具 ====================
+function getPureName(cat) {
+  if (!cat) return '';
+  const parts = cat.trim().split(/\s+/);
+  if (parts.length > 1 && parts[0].length <= 2) {
+    return parts.slice(1).join(' ');
+  }
+  return cat.trim();
+}
+
+function makeSignature(type, category, amount, desc, dateStr) {
+  // 用日期（yyyy-mm-dd）+ 类型 + 分类名 + 金额 + 备注 作为唯一标识
+  return [dateStr, type, getPureName(category), Number(amount).toFixed(2), (desc || '').trim()].join('|');
+}
+
+// ==================== 待导入数据 ====================
+// 说明：每条记录 = { date:'2024-12-31', type:'expense'|'income', category:'餐饮', amount:11.00, desc:'面包' }
+// 为了让您以后能自己往里面加 2025、2026 的数据，这里保留了原始数据，注释说明格式。
+// ⚠️ 不需要改这一段，导入逻辑会自动处理。
+
+const IMPORT_DATA = [
+  // 存钱记录（收入 / 支出）
+  { date:'2024-12-23', type:'income', category:'存钱', amount:6000.00, desc:'' },
+  { date:'2024-09-01', type:'income', category:'存钱', amount:11000.00, desc:'' },
+  { date:'2024-08-09', type:'expense', category:'存钱', amount:7000.00, desc:'' },
+  { date:'2024-08-07', type:'income', category:'存钱', amount:10000.00, desc:'' },
+  { date:'2024-07-26', type:'income', category:'存钱', amount:20000.00, desc:'' },
+
+  // 12月
+  { date:'2024-12-31', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-12-31', type:'expense', category:'餐饮', amount:11.00, desc:'面包' },
+  { date:'2024-12-31', type:'expense', category:'餐饮', amount:9.09, desc:'盘盘香' },
+  { date:'2024-12-31', type:'expense', category:'餐饮', amount:11.00, desc:'卤串' },
+  { date:'2024-12-31', type:'expense', category:'娱乐', amount:2.25, desc:'小星星亮片' },
+  { date:'2024-12-31', type:'expense', category:'社交', amount:1.88, desc:'小明信片' },
+  { date:'2024-12-31', type:'expense', category:'社交', amount:2.93, desc:'礼物袋' },
+  { date:'2024-12-31', type:'expense', category:'社交', amount:17.09, desc:'卢卡玩偶' },
+  { date:'2024-12-31', type:'expense', category:'社交', amount:7.60, desc:'卢卡礼物' },
+  { date:'2024-12-31', type:'expense', category:'日用', amount:0.60, desc:'丙烯马克笔' },
+  { date:'2024-12-30', type:'expense', category:'餐饮', amount:20.00, desc:'炸串' },
+  { date:'2024-12-30', type:'expense', category:'娱乐', amount:0.30, desc:'内页' },
+  { date:'2024-12-30', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-12-28', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-12-29', type:'income',  category:'爸', amount:300.00, desc:'' },
+  { date:'2024-12-28', type:'expense', category:'餐饮', amount:15.00, desc:'干锅' },
+  { date:'2024-12-25', type:'expense', category:'餐饮', amount:4.00, desc:'生煎' },
+  { date:'2024-12-27', type:'expense', category:'零食', amount:6.00, desc:'茉莉奶绿' },
+  { date:'2024-12-27', type:'expense', category:'餐饮', amount:16.00, desc:'鸡公煲' },
+  { date:'2024-12-27', type:'expense', category:'日用', amount:32.02, desc:'裁纸器' },
+  { date:'2024-12-26', type:'expense', category:'日用', amount:0.44, desc:'洗澡' },
+  { date:'2024-12-26', type:'expense', category:'娱乐', amount:12.01, desc:'贴纸' },
+  { date:'2024-12-26', type:'expense', category:'餐饮', amount:4.00, desc:'酱香饼鸡肉串' },
+  { date:'2024-12-26', type:'expense', category:'餐饮', amount:11.50, desc:'盘盘香' },
+  { date:'2024-12-25', type:'expense', category:'日用', amount:28.80, desc:'花🌸' },
+  { date:'2024-12-25', type:'expense', category:'餐饮', amount:3.00, desc:'墨鱼丸' },
+  { date:'2024-12-25', type:'expense', category:'餐饮', amount:7.00, desc:'绵阳米粉' },
+  { date:'2024-12-24', type:'expense', category:'日用', amount:0.03, desc:'洗脸洗脚' },
+  { date:'2024-12-24', type:'expense', category:'零食', amount:7.50, desc:'两个酸奶' },
+  { date:'2024-12-24', type:'expense', category:'餐饮', amount:16.60, desc:'盘盘香' },
+  { date:'2024-12-24', type:'expense', category:'零食', amount:27.90, desc:'蛋糕' },
+  { date:'2024-12-23', type:'expense', category:'零食', amount:3.50, desc:'书亦烧仙草金桔柠檬' },
+  { date:'2024-12-23', type:'expense', category:'娱乐', amount:5.00, desc:'网易云会员' },
+  { date:'2024-12-23', type:'expense', category:'出行', amount:5.00, desc:'' },
+  { date:'2024-12-23', type:'income',  category:'妈妈', amount:500.00, desc:'' },
+  { date:'2024-12-23', type:'expense', category:'日用', amount:7.20, desc:'粘贴砖' },
+  { date:'2024-12-23', type:'expense', category:'零食', amount:28.44, desc:'鸡蛋酥' },
+  { date:'2024-12-21', type:'expense', category:'出行', amount:10.80, desc:'地铁' },
+  { date:'2024-12-21', type:'expense', category:'餐饮', amount:195.00, desc:'烤肉' },
+  { date:'2024-12-20', type:'expense', category:'日用', amount:16.90, desc:'开瓶器' },
+  { date:'2024-12-20', type:'expense', category:'餐饮', amount:15.00, desc:'羊肉泡馍' },
+  { date:'2024-12-19', type:'income',  category:'爸', amount:300.00, desc:'' },
+  { date:'2024-12-20', type:'expense', category:'餐饮', amount:15.50, desc:'芋泥巴斯克' },
+  { date:'2024-12-19', type:'expense', category:'餐饮', amount:11.00, desc:'炸串' },
+  { date:'2024-12-19', type:'expense', category:'餐饮', amount:15.00, desc:'卤肉拌饭' },
+  { date:'2024-12-19', type:'expense', category:'餐饮', amount:5.50, desc:'土豆饼蛋挞窝窝头' },
+  { date:'2024-12-18', type:'expense', category:'日用', amount:0.30, desc:'打印' },
+  { date:'2024-12-18', type:'expense', category:'餐饮', amount:5.50, desc:'酱香饼紫米糕不知名糕' },
+  { date:'2024-12-18', type:'expense', category:'餐饮', amount:9.90, desc:'水饺' },
+  { date:'2024-12-16', type:'expense', category:'日用', amount:0.20, desc:'洗澡' },
+  { date:'2024-12-17', type:'expense', category:'日用', amount:0.03, desc:'洗脸' },
+  { date:'2024-12-17', type:'expense', category:'餐饮', amount:15.00, desc:'干锅' },
+  { date:'2024-12-16', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-12-16', type:'expense', category:'餐饮', amount:15.50, desc:'芋泥巴斯克' },
+  { date:'2024-12-16', type:'expense', category:'日用', amount:39.45, desc:'扭扭棒' },
+  { date:'2024-12-16', type:'expense', category:'日用', amount:1.93, desc:'椅子静音套' },
+  { date:'2024-12-15', type:'expense', category:'餐饮', amount:5.40, desc:'茉莉奶绿' },
+  { date:'2024-12-15', type:'expense', category:'餐饮', amount:12.00, desc:'羊肉米线' },
+  { date:'2024-12-15', type:'expense', category:'日用', amount:12.40, desc:'猫猫玩偶' },
+  { date:'2024-12-15', type:'expense', category:'日用', amount:0.10, desc:'拼多多月卡' },
+  { date:'2024-12-15', type:'expense', category:'日用', amount:34.00, desc:'宿舍遮挡布' },
+  { date:'2024-12-13', type:'income',  category:'妈妈', amount:200.00, desc:'' },
+  { date:'2024-12-14', type:'expense', category:'零食', amount:6.00, desc:'紫薯包蛋挞小包子玉米粥' },
+  { date:'2024-12-13', type:'expense', category:'餐饮', amount:13.95, desc:'香锅' },
+  { date:'2024-12-12', type:'expense', category:'餐饮', amount:13.00, desc:'卤串' },
+  { date:'2024-12-12', type:'expense', category:'学习', amount:0.20, desc:'打印' },
+  { date:'2024-12-12', type:'expense', category:'餐饮', amount:4.85, desc:'鸡肉串蛋挞馒头' },
+  { date:'2024-12-11', type:'expense', category:'餐饮', amount:12.00, desc:'干拌鸡杂米线' },
+  { date:'2024-12-11', type:'expense', category:'餐饮', amount:14.00, desc:'面包' },
+  { date:'2024-12-11', type:'expense', category:'日用', amount:12.99, desc:'防尘膜' },
+  { date:'2024-12-10', type:'expense', category:'日用', amount:0.06, desc:'洗脚' },
+  { date:'2024-12-10', type:'expense', category:'餐饮', amount:8.00, desc:'绵阳米粉' },
+  { date:'2024-12-10', type:'income',  category:'妈妈', amount:600.00, desc:'生活费' },
+  { date:'2024-12-09', type:'expense', category:'零食', amount:5.00, desc:'老酸奶' },
+  { date:'2024-12-09', type:'expense', category:'餐饮', amount:15.00, desc:'滑蛋培根饭' },
+  { date:'2024-12-09', type:'expense', category:'日用', amount:3.52, desc:'甲托胶' },
+  { date:'2024-12-09', type:'expense', category:'日用', amount:18.61, desc:'彩铅' },
+  { date:'2024-12-09', type:'expense', category:'日用', amount:4.14, desc:'甲托' },
+  { date:'2024-12-08', type:'expense', category:'日用', amount:4.90, desc:'甲片' },
+  { date:'2024-12-07', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-12-09', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-12-07', type:'expense', category:'餐饮', amount:1.20, desc:'打包盒' },
+  { date:'2024-12-07', type:'expense', category:'餐饮', amount:14.00, desc:'豆汤饭' },
+  { date:'2024-12-07', type:'expense', category:'餐饮', amount:16.00, desc:'白菜炖丸子 胡萝卜炖牛肉' },
+  { date:'2024-12-06', type:'expense', category:'日用', amount:0.05, desc:'洗漱' },
+  { date:'2024-12-06', type:'expense', category:'餐饮', amount:4.50, desc:'煎饺煎蛋八百字' },
+  { date:'2024-12-06', type:'expense', category:'娱乐', amount:6.00, desc:'第五' },
+  { date:'2024-12-06', type:'expense', category:'餐饮', amount:15.00, desc:'干锅' },
+  { date:'2024-12-06', type:'expense', category:'日用', amount:7.90, desc:'创可贴' },
+  { date:'2024-12-06', type:'expense', category:'日用', amount:12.78, desc:'香薰' },
+  { date:'2024-12-05', type:'expense', category:'日用', amount:0.20, desc:'洗脸洗头' },
+  { date:'2024-12-05', type:'expense', category:'餐饮', amount:12.00, desc:'炒面丸子炒木耳' },
+  { date:'2024-12-05', type:'expense', category:'餐饮', amount:8.00, desc:'抄手' },
+  { date:'2024-12-05', type:'expense', category:'日用', amount:5.62, desc:'两角钉' },
+  { date:'2024-12-02', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-12-05', type:'expense', category:'日用', amount:0.75, desc:'卡膜' },
+  { date:'2024-12-04', type:'expense', category:'零食', amount:6.30, desc:'冰淇淋' },
+  { date:'2024-12-04', type:'expense', category:'零食', amount:29.50, desc:'面包' },
+  { date:'2024-12-04', type:'expense', category:'餐饮', amount:9.80, desc:'熏肉土豆泥拌饭' },
+  { date:'2024-12-04', type:'expense', category:'餐饮', amount:6.50, desc:'八宝粥芝麻团煎饺蛋挞' },
+  { date:'2024-12-04', type:'expense', category:'日用', amount:4.46, desc:'豆丁模具' },
+  { date:'2024-12-04', type:'expense', category:'日用', amount:20.64, desc:'牙膏' },
+  { date:'2024-12-04', type:'expense', category:'日用', amount:14.22, desc:'玩偶' },
+  { date:'2024-12-03', type:'expense', category:'餐饮', amount:5.20, desc:'酸菜肉丝面卤蛋' },
+  { date:'2024-12-03', type:'expense', category:'餐饮', amount:10.00, desc:'炒木耳炖排骨八宝粥' },
+  { date:'2024-12-03', type:'expense', category:'日用', amount:16.00, desc:'坐垫' },
+  { date:'2024-12-03', type:'expense', category:'日用', amount:28.31, desc:'打孔器胶棒' },
+  { date:'2024-11-30', type:'expense', category:'日用', amount:3.00, desc:'扑克牌' },
+  { date:'2024-12-02', type:'expense', category:'餐饮', amount:5.00, desc:'酱香饼' },
+  { date:'2024-12-02', type:'expense', category:'日用', amount:27.80, desc:'活页本外壳' },
+  { date:'2024-12-02', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-12-02', type:'expense', category:'日用', amount:1.51, desc:'星星压花器' },
+  { date:'2024-12-01', type:'expense', category:'日用', amount:30.21, desc:'衣服罩' },
+  { date:'2024-12-01', type:'expense', category:'零食', amount:2.00, desc:'矿泉水' },
+  { date:'2024-12-01', type:'expense', category:'零食', amount:4.90, desc:'辣条' },
+  { date:'2024-12-01', type:'expense', category:'零食', amount:12.00, desc:'芝士串' },
+  { date:'2024-12-01', type:'income',  category:'爸', amount:200.00, desc:'' },
+  { date:'2024-12-01', type:'income',  category:'妈妈', amount:204.00, desc:'利息' },
+  { date:'2024-12-01', type:'expense', category:'餐饮', amount:84.00, desc:'干锅' },
+  { date:'2024-12-01', type:'expense', category:'出行', amount:7.20, desc:'地铁' },
+  { date:'2024-11-30', type:'expense', category:'出行', amount:4.50, desc:'地铁' },
+  { date:'2024-12-01', type:'expense', category:'零食', amount:22.14, desc:'酸砂' },
+
+  // 11月
+  { date:'2024-11-30', type:'expense', category:'餐饮', amount:5.50, desc:'窝窝头蛋挞八宝粥紫米糕' },
+  { date:'2024-11-30', type:'expense', category:'餐饮', amount:10.00, desc:'豌豆尖丸子炒木耳八宝粥' },
+  { date:'2024-11-30', type:'expense', category:'日用', amount:4.09, desc:'活页孔' },
+  { date:'2024-11-30', type:'expense', category:'日用', amount:7.80, desc:'m5内页' },
+  { date:'2024-11-29', type:'expense', category:'零食', amount:8.00, desc:'酸奶' },
+  { date:'2024-11-29', type:'expense', category:'餐饮', amount:11.00, desc:'卤串' },
+  { date:'2024-11-29', type:'expense', category:'餐饮', amount:45.00, desc:'大餐' },
+  { date:'2024-11-29', type:'expense', category:'日用', amount:0.30, desc:'洗脸洗头' },
+  { date:'2024-11-28', type:'expense', category:'日用', amount:19.11, desc:'活页本' },
+  { date:'2024-11-28', type:'expense', category:'零食', amount:21.00, desc:'雪碧郎酒' },
+  { date:'2024-11-28', type:'expense', category:'餐饮', amount:15.00, desc:'干锅' },
+  { date:'2024-11-28', type:'expense', category:'餐饮', amount:8.50, desc:'蚂蚁上树花菜炒饭' },
+  { date:'2024-11-28', type:'expense', category:'日用', amount:0.01, desc:'洗脚' },
+  { date:'2024-11-28', type:'expense', category:'日用', amount:0.03, desc:'洗脸' },
+  { date:'2024-11-28', type:'expense', category:'日用', amount:8.55, desc:'粘毛器' },
+  { date:'2024-11-27', type:'expense', category:'餐饮', amount:23.00, desc:'面包' },
+  { date:'2024-11-27', type:'expense', category:'餐饮', amount:4.50, desc:'煎饺蛋挞' },
+  { date:'2024-11-27', type:'expense', category:'餐饮', amount:5.00, desc:'酱香饼' },
+  { date:'2024-11-27', type:'expense', category:'餐饮', amount:12.00, desc:'羊肉粉' },
+  { date:'2024-11-26', type:'expense', category:'日用', amount:0.39, desc:'洗澡' },
+  { date:'2024-11-26', type:'expense', category:'餐饮', amount:10.00, desc:'卤串' },
+  { date:'2024-11-26', type:'expense', category:'餐饮', amount:15.00, desc:'干锅' },
+  { date:'2024-11-26', type:'expense', category:'日用', amount:2.98, desc:'手链' },
+  { date:'2024-11-25', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-11-25', type:'income',  category:'妈妈', amount:600.00, desc:'生活费' },
+  { date:'2024-11-25', type:'expense', category:'零食', amount:38.00, desc:'卤味' },
+  { date:'2024-11-25', type:'expense', category:'零食', amount:10.00, desc:'糖葫芦' },
+  { date:'2024-11-25', type:'expense', category:'日用', amount:3.42, desc:'八块小香皂' },
+  { date:'2024-11-25', type:'expense', category:'餐饮', amount:5.00, desc:'铜锣烧' },
+  { date:'2024-11-25', type:'expense', category:'日用', amount:3.50, desc:'卷纸' },
+  { date:'2024-11-25', type:'expense', category:'日用', amount:4.07, desc:'卷尺' },
+  { date:'2024-11-24', type:'expense', category:'日用', amount:15.91, desc:'泡菜坛' },
+  { date:'2024-11-24', type:'expense', category:'日用', amount:9.07, desc:'引火块' },
+  { date:'2024-11-24', type:'expense', category:'数码', amount:18.50, desc:'电容笔' },
+  { date:'2024-11-24', type:'expense', category:'数码', amount:7.80, desc:'类纸膜' },
+  { date:'2024-11-24', type:'expense', category:'水果', amount:7.50, desc:'苹果' },
+  { date:'2024-11-24', type:'expense', category:'数码', amount:18.66, desc:'平板壳' },
+  { date:'2024-11-24', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-11-22', type:'expense', category:'餐饮', amount:12.00, desc:'卤串' },
+  { date:'2024-11-22', type:'expense', category:'餐饮', amount:15.00, desc:'干锅' },
+  { date:'2024-11-22', type:'expense', category:'餐饮', amount:4.00, desc:'酱香饼鸡肉串' },
+  { date:'2024-11-21', type:'expense', category:'餐饮', amount:14.00, desc:'炸串' },
+  { date:'2024-11-21', type:'expense', category:'餐饮', amount:8.00, desc:'绵阳米粉' },
+  { date:'2024-11-20', type:'expense', category:'餐饮', amount:12.00, desc:'卤串' },
+  { date:'2024-11-20', type:'expense', category:'餐饮', amount:10.00, desc:'三个面包' },
+  { date:'2024-11-20', type:'expense', category:'学习', amount:4.00, desc:'微观经济学高鸿业' },
+  { date:'2024-11-20', type:'expense', category:'学习', amount:0.30, desc:'打印' },
+  { date:'2024-11-20', type:'expense', category:'餐饮', amount:6.50, desc:'双拼土豆泥粉条' },
+  { date:'2024-11-20', type:'expense', category:'餐饮', amount:4.50, desc:'煎饺蛋挞' },
+  { date:'2024-11-19', type:'expense', category:'餐饮', amount:13.00, desc:'酸汤面' },
+  { date:'2024-11-18', type:'expense', category:'零食', amount:5.00, desc:'奥利奥大福' },
+  { date:'2024-11-18', type:'expense', category:'餐饮', amount:6.50, desc:'花菜炒肉 泡面炒肉' },
+  { date:'2024-11-18', type:'expense', category:'娱乐', amount:5.00, desc:'网易云会员' },
+  { date:'2024-11-18', type:'expense', category:'出行', amount:10.80, desc:'地铁' },
+  { date:'2024-11-18', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-11-18', type:'expense', category:'零食', amount:11.80, desc:'蜂蜜桂花酱' },
+  { date:'2024-11-18', type:'expense', category:'零食', amount:15.80, desc:'抹茶粉' },
+  { date:'2024-11-18', type:'expense', category:'日用', amount:8.50, desc:'小壶勺子' },
+  { date:'2024-11-17', type:'expense', category:'日用', amount:0.73, desc:'杯刷' },
+  { date:'2024-11-17', type:'expense', category:'零食', amount:20.74, desc:'养味和瓶塞' },
+  { date:'2024-11-17', type:'expense', category:'日用', amount:9.90, desc:'置物篮' },
+  { date:'2024-11-16', type:'expense', category:'日用', amount:10.90, desc:'订书机' },
+  { date:'2024-11-16', type:'expense', category:'成本', amount:7.50, desc:'灰色背景板' },
+  { date:'2024-11-16', type:'expense', category:'成本', amount:6.45, desc:'Kitty风铃' },
+  { date:'2024-11-16', type:'expense', category:'成本', amount:9.69, desc:'贴纸' },
+  { date:'2024-11-16', type:'expense', category:'餐饮', amount:18.90, desc:'塔斯汀汉堡' },
+  { date:'2024-11-16', type:'income',  category:'爸', amount:300.00, desc:'我爸' },
+  { date:'2024-11-15', type:'expense', category:'餐饮', amount:7.40, desc:'粗粮蘑菇炒肉青菜' },
+  { date:'2024-11-15', type:'expense', category:'餐饮', amount:4.00, desc:'土豆饼煎饺' },
+  { date:'2024-11-15', type:'expense', category:'日用', amount:7.35, desc:'挤痘痘器具' },
+  { date:'2024-11-14', type:'expense', category:'餐饮', amount:3.00, desc:'煎饺窝窝头' },
+  { date:'2024-11-13', type:'expense', category:'餐饮', amount:22.00, desc:'炸串' },
+  { date:'2024-11-13', type:'expense', category:'餐饮', amount:4.50, desc:'蛋挞酱香饼' },
+  { date:'2024-11-12', type:'expense', category:'日用', amount:8.86, desc:'点火器' },
+  { date:'2024-11-12', type:'expense', category:'日用', amount:25.90, desc:'洗发水' },
+  { date:'2024-11-12', type:'expense', category:'成本', amount:13.80, desc:'苹果本' },
+  { date:'2024-11-12', type:'expense', category:'零食', amount:5.00, desc:'老酸奶' },
+  { date:'2024-11-12', type:'expense', category:'餐饮', amount:7.00, desc:'绵阳米粉' },
+  { date:'2024-11-11', type:'expense', category:'日用', amount:5.50, desc:'酒精' },
+  { date:'2024-11-11', type:'expense', category:'日用', amount:26.80, desc:'水杨酸' },
+  { date:'2024-11-11', type:'income',  category:'妈妈', amount:18.00, desc:'猜中有奖' },
+  { date:'2024-11-11', type:'expense', category:'日用', amount:14.95, desc:'加热杯垫' },
+  { date:'2024-11-11', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-11-11', type:'expense', category:'日用', amount:11.29, desc:'唇膏' },
+  { date:'2024-11-11', type:'expense', category:'日用', amount:36.90, desc:'卷发棒' },
+  { date:'2024-11-10', type:'expense', category:'餐饮', amount:12.80, desc:'肉夹馍' },
+  { date:'2024-11-10', type:'expense', category:'餐饮', amount:21.00, desc:'冒菜' },
+  { date:'2024-11-10', type:'expense', category:'娱乐', amount:6.00, desc:'第五人格' },
+  { date:'2024-11-10', type:'expense', category:'成本', amount:40.18, desc:'' },
+  { date:'2024-11-09', type:'expense', category:'餐饮', amount:11.00, desc:'肥肠面狼牙土豆' },
+  { date:'2024-11-08', type:'expense', category:'日用', amount:0.10, desc:'洗澡' },
+  { date:'2024-11-08', type:'expense', category:'餐饮', amount:10.00, desc:'肉夹馍' },
+  { date:'2024-11-08', type:'expense', category:'餐饮', amount:4.00, desc:'酱香饼煎饺' },
+  { date:'2024-11-08', type:'expense', category:'餐饮', amount:5.20, desc:'酸菜肉丝面卤蛋' },
+  { date:'2024-11-07', type:'expense', category:'餐饮', amount:17.00, desc:'油炸串串' },
+  { date:'2024-11-07', type:'expense', category:'日用', amount:34.00, desc:'理发' },
+  { date:'2024-11-06', type:'expense', category:'日用', amount:0.02, desc:'洗脚' },
+  { date:'2024-11-07', type:'expense', category:'餐饮', amount:12.80, desc:'肉夹馍' },
+  { date:'2024-11-06', type:'expense', category:'餐饮', amount:5.00, desc:'酱香饼' },
+  { date:'2024-11-06', type:'expense', category:'餐饮', amount:9.60, desc:'串串' },
+  { date:'2024-11-05', type:'expense', category:'日用', amount:0.02, desc:'洗脚' },
+  { date:'2024-11-06', type:'expense', category:'餐饮', amount:3.00, desc:'土豆饼窝窝头' },
+  { date:'2024-11-06', type:'expense', category:'餐饮', amount:14.00, desc:'豆汤饭' },
+  { date:'2024-11-06', type:'expense', category:'成本', amount:1.90, desc:'反光板' },
+  { date:'2024-11-06', type:'expense', category:'成本', amount:21.73, desc:'手机支架' },
+  { date:'2024-11-06', type:'expense', category:'日用', amount:8.93, desc:'发圈' },
+  { date:'2024-11-05', type:'expense', category:'日用', amount:13.49, desc:'桌垫' },
+  { date:'2024-11-05', type:'income',  category:'妈妈', amount:218.00, desc:'妈妈' },
+  { date:'2024-11-05', type:'income',  category:'退款', amount:1.70, desc:'袜子🧦' },
+  { date:'2024-11-05', type:'expense', category:'餐饮', amount:5.00, desc:'墨鱼丸烤肠' },
+  { date:'2024-11-05', type:'expense', category:'投资', amount:135.50, desc:'蛋糕' },
+  { date:'2024-11-05', type:'income',  category:'卖货', amount:252.90, desc:'' },
+  { date:'2024-11-05', type:'expense', category:'投资', amount:90.00, desc:'退款' },
+  { date:'2024-11-04', type:'expense', category:'学习', amount:0.30, desc:'打印' },
+  { date:'2024-11-04', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-11-04', type:'expense', category:'出行', amount:12.60, desc:'麓湖地铁' },
+  { date:'2024-11-03', type:'income',  category:'妈妈', amount:88.88, desc:'有奖竞猜' },
+  { date:'2024-11-03', type:'expense', category:'日用', amount:1.73, desc:'穿戴甲' },
+  { date:'2024-11-03', type:'expense', category:'日用', amount:8.11, desc:'穿戴甲' },
+  { date:'2024-11-03', type:'income',  category:'姐姐', amount:100.00, desc:'姐姐发工资了' },
+  { date:'2024-11-02', type:'income',  category:'姐姐', amount:50.00, desc:'吃饭' },
+  { date:'2024-11-02', type:'expense', category:'餐饮', amount:99.00, desc:'厕所串串' },
+  { date:'2024-11-02', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-11-01', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-11-01', type:'expense', category:'日用', amount:2.20, desc:'座椅套' },
+  { date:'2024-11-01', type:'expense', category:'餐饮', amount:18.00, desc:'麻辣香锅' },
+  { date:'2024-11-01', type:'expense', category:'餐饮', amount:23.00, desc:'糍粑凉拌菜肠粉' },
+
+  // 10月
+  { date:'2024-10-29', type:'expense', category:'学习', amount:0.80, desc:'打印' },
+  { date:'2024-11-01', type:'expense', category:'学习', amount:0.30, desc:'打印' },
+  { date:'2024-10-31', type:'expense', category:'餐饮', amount:10.00, desc:'干拌肥肠面' },
+  { date:'2024-10-31', type:'expense', category:'餐饮', amount:5.00, desc:'糍粑' },
+  { date:'2024-10-31', type:'income',  category:'妈妈', amount:204.00, desc:'利息' },
+  { date:'2024-10-31', type:'expense', category:'学习', amount:2.80, desc:'回形针' },
+  { date:'2024-10-31', type:'expense', category:'餐饮', amount:4.00, desc:'煎饺土豆饼' },
+  { date:'2024-10-30', type:'expense', category:'日用', amount:0.19, desc:'洗澡' },
+  { date:'2024-10-30', type:'expense', category:'娱乐', amount:10.00, desc:'晋江' },
+  { date:'2024-10-30', type:'expense', category:'餐饮', amount:7.00, desc:'奶茶' },
+  { date:'2024-10-30', type:'expense', category:'餐饮', amount:24.00, desc:'串串' },
+  { date:'2024-10-29', type:'expense', category:'投资', amount:260.00, desc:'盒马购物' },
+  { date:'2024-10-30', type:'expense', category:'餐饮', amount:4.00, desc:'煎饺鸡肉串' },
+  { date:'2024-10-29', type:'expense', category:'餐饮', amount:11.90, desc:'串串米饭' },
+  { date:'2024-10-28', type:'income',  category:'卖货', amount:330.00, desc:'' },
+  { date:'2024-10-28', type:'income',  category:'妈妈', amount:500.00, desc:'妈妈给的启动资金' },
+  { date:'2024-10-28', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-10-28', type:'expense', category:'餐饮', amount:8.00, desc:'抄手' },
+  { date:'2024-10-27', type:'expense', category:'日用', amount:9.70, desc:'五双袜子' },
+  { date:'2024-10-27', type:'expense', category:'餐饮', amount:87.00, desc:'串串香' },
+  { date:'2024-10-27', type:'income',  category:'爸', amount:300.00, desc:'父亲' },
+  { date:'2024-10-27', type:'income',  category:'妈妈', amount:600.00, desc:'生活费+晚餐报销' },
+  { date:'2024-10-26', type:'expense', category:'餐饮', amount:147.00, desc:'烤鸭套餐' },
+  { date:'2024-10-26', type:'expense', category:'日用', amount:4.50, desc:'手机壳' },
+  { date:'2024-10-26', type:'expense', category:'日用', amount:21.80, desc:'体重秤' },
+  { date:'2024-10-26', type:'expense', category:'零食', amount:28.44, desc:'鸡蛋酥' },
+  { date:'2024-10-21', type:'expense', category:'日用', amount:1.80, desc:'淘宝卡' },
+  { date:'2024-10-21', type:'expense', category:'日用', amount:92.01, desc:'买喷雾' },
+  { date:'2024-10-21', type:'income',  category:'姐姐', amount:95.00, desc:'买喷雾' },
+  { date:'2024-10-25', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-10-26', type:'expense', category:'投资', amount:19.90, desc:'酸辣粉' },
+  { date:'2024-10-25', type:'expense', category:'餐饮', amount:7.00, desc:'绵阳米粉' },
+  { date:'2024-10-24', type:'expense', category:'餐饮', amount:22.40, desc:'冒菜' },
+  { date:'2024-10-23', type:'expense', category:'日用', amount:0.25, desc:'洗澡' },
+  { date:'2024-10-21', type:'expense', category:'日用', amount:0.01, desc:'洗脚' },
+  { date:'2024-10-22', type:'expense', category:'日用', amount:0.28, desc:'洗澡' },
+  { date:'2024-10-24', type:'income',  category:'红包', amount:0.01, desc:'骗子红包' },
+  { date:'2024-10-23', type:'expense', category:'投资', amount:2.42, desc:'牛皮纸袋' },
+  { date:'2024-10-23', type:'expense', category:'餐饮', amount:13.80, desc:'炸鸡' },
+  { date:'2024-10-23', type:'expense', category:'投资', amount:9.73, desc:'盒子手套' },
+  { date:'2024-10-23', type:'expense', category:'餐饮', amount:4.00, desc:'酱香饼煎饺' },
+  { date:'2024-10-22', type:'expense', category:'投资', amount:4.50, desc:'大福分装盒' },
+  { date:'2024-10-22', type:'expense', category:'餐饮', amount:7.00, desc:'凉粉 凉拌藕' },
+  { date:'2024-10-21', type:'expense', category:'日用', amount:5.35, desc:'毯子＊2' },
+  { date:'2024-10-21', type:'expense', category:'餐饮', amount:8.00, desc:'绵阳米粉' },
+  { date:'2024-10-21', type:'expense', category:'日用', amount:3.28, desc:'两把剪刀' },
+  { date:'2024-10-20', type:'expense', category:'餐饮', amount:47.41, desc:'牛奶' },
+  { date:'2024-10-20', type:'income',  category:'爸', amount:300.00, desc:'父亲' },
+  { date:'2024-10-20', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-10-20', type:'expense', category:'餐饮', amount:6.50, desc:'烤肠烤墨鱼丸' },
+  { date:'2024-10-20', type:'expense', category:'餐饮', amount:8.00, desc:'绵阳米粉' },
+  { date:'2024-10-14', type:'expense', category:'日用', amount:25.00, desc:'姐姐' },
+  { date:'2024-10-13', type:'expense', category:'零食', amount:4.70, desc:'糯叽叽粑粑' },
+  { date:'2024-10-08', type:'expense', category:'日用', amount:10.00, desc:'A水钱' },
+  { date:'2024-10-18', type:'income',  category:'妈妈', amount:1000.00, desc:'生活费' },
+  { date:'2024-10-18', type:'expense', category:'出行', amount:4.50, desc:'地铁' },
+  { date:'2024-10-14', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-10-19', type:'expense', category:'零食', amount:23.55, desc:'鸡蛋酥' },
+  { date:'2024-10-18', type:'expense', category:'餐饮', amount:3.50, desc:'煎蛋煎饺' },
+  { date:'2024-10-17', type:'expense', category:'日用', amount:3.80, desc:'钉子' },
+  { date:'2024-10-16', type:'expense', category:'餐饮', amount:3.00, desc:'煎饺窝窝头' },
+  { date:'2024-10-16', type:'expense', category:'日用', amount:0.11, desc:'洗澡' },
+  { date:'2024-10-17', type:'expense', category:'日用', amount:0.13, desc:'洗澡' },
+  { date:'2024-10-17', type:'expense', category:'餐饮', amount:4.00, desc:'煎饺酱香饼' },
+  { date:'2024-10-16', type:'expense', category:'餐饮', amount:11.00, desc:'牛肉盖浇饭' },
+  { date:'2024-10-15', type:'expense', category:'学习', amount:6.00, desc:'买西财本子' },
+  { date:'2024-10-15', type:'expense', category:'餐饮', amount:8.00, desc:'凉面狼牙土豆' },
+  { date:'2024-10-15', type:'expense', category:'日用', amount:10.90, desc:'垫脚凳' },
+  { date:'2024-10-15', type:'expense', category:'餐饮', amount:19.90, desc:'酸辣粉' },
+  { date:'2024-10-14', type:'expense', category:'娱乐', amount:5.00, desc:'网易云会员' },
+  { date:'2024-10-14', type:'expense', category:'餐饮', amount:7.20, desc:'卤蛋肥肠面' },
+  { date:'2024-10-14', type:'expense', category:'日用', amount:4.99, desc:'小推车' },
+  { date:'2024-10-14', type:'expense', category:'日用', amount:6.70, desc:'毛毡垫' },
+  { date:'2024-10-13', type:'expense', category:'水果', amount:10.00, desc:'苹果' },
+  { date:'2024-10-13', type:'expense', category:'餐饮', amount:13.00, desc:'番茄肉酱面' },
+  { date:'2024-10-13', type:'expense', category:'零食', amount:29.80, desc:'爱达乐面包' },
+  { date:'2024-10-13', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-10-12', type:'expense', category:'日用', amount:17.77, desc:'水杯' },
+  { date:'2024-10-12', type:'expense', category:'学习', amount:6.98, desc:'笔记本＊4' },
+  { date:'2024-10-12', type:'expense', category:'餐饮', amount:10.00, desc:'粉蒸肉蒸蛋' },
+  { date:'2024-10-11', type:'expense', category:'学习', amount:11.80, desc:'笔' },
+  { date:'2024-10-11', type:'expense', category:'学习', amount:4.80, desc:'莫名其妙团务章' },
+  { date:'2024-10-11', type:'expense', category:'学习', amount:11.85, desc:'打印政经' },
+  { date:'2024-10-11', type:'expense', category:'学习', amount:24.30, desc:'考研数学' },
+  { date:'2024-10-11', type:'expense', category:'餐饮', amount:13.00, desc:'五谷渔粉' },
+  { date:'2024-10-11', type:'expense', category:'餐饮', amount:7.00, desc:'蜜雪冰城' },
+  { date:'2024-10-10', type:'expense', category:'学习', amount:100.00, desc:'班费' },
+  { date:'2024-10-10', type:'expense', category:'餐饮', amount:42.80, desc:'KFC' },
+  { date:'2024-10-07', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-10-10', type:'expense', category:'餐饮', amount:5.50, desc:'蚂蚁上树炒面' },
+  { date:'2024-10-10', type:'expense', category:'餐饮', amount:4.00, desc:'煎饺鸡肉串' },
+  { date:'2024-10-08', type:'expense', category:'日用', amount:0.11, desc:'洗澡' },
+  { date:'2024-10-09', type:'expense', category:'餐饮', amount:8.00, desc:'抄手' },
+  { date:'2024-10-09', type:'income',  category:'退款', amount:5.00, desc:'荧光笔' },
+  { date:'2024-10-09', type:'expense', category:'餐饮', amount:4.00, desc:'窝窝头紫米糕煎饺' },
+  { date:'2024-10-08', type:'expense', category:'餐饮', amount:5.20, desc:'卤蛋酸菜肉丝面' },
+  { date:'2024-10-08', type:'expense', category:'餐饮', amount:4.50, desc:'鸡肉串窝窝头紫米糕包子' },
+  { date:'2024-10-05', type:'income',  category:'姐姐', amount:30.00, desc:'厕所串串-肯德基' },
+  { date:'2024-10-07', type:'income',  category:'退款', amount:2.00, desc:'刷子发错颜色了' },
+  { date:'2024-10-07', type:'expense', category:'日用', amount:19.96, desc:'话费' },
+  { date:'2024-10-06', type:'expense', category:'餐饮', amount:19.90, desc:'螺蛳粉' },
+  { date:'2024-10-05', type:'income',  category:'爸', amount:300.00, desc:'父亲' },
+  { date:'2024-10-05', type:'expense', category:'日用', amount:42.76, desc:'垫板 洗眼液 刷子 荧光笔 魔术贴' },
+  { date:'2024-10-04', type:'expense', category:'餐饮', amount:12.00, desc:'厕所串串' },
+  { date:'2024-10-04', type:'expense', category:'餐饮', amount:99.00, desc:'厕所串串' },
+  { date:'2024-10-03', type:'income',  category:'妈妈', amount:50.00, desc:'' },
+  { date:'2024-10-03', type:'expense', category:'学习', amount:11.11, desc:'字帖' },
+  { date:'2024-10-03', type:'expense', category:'日用', amount:23.62, desc:'收纳 夹子' },
+  { date:'2024-10-03', type:'expense', category:'娱乐', amount:7.64, desc:'磁铁 手工胶水' },
+  { date:'2024-10-03', type:'expense', category:'娱乐', amount:69.94, desc:'石塑黏土' },
+  { date:'2024-10-02', type:'income',  category:'妈妈', amount:204.00, desc:'利息' },
+  { date:'2024-10-02', type:'expense', category:'出行', amount:1.50, desc:'自行车' },
+  { date:'2024-10-02', type:'expense', category:'日用', amount:0.10, desc:'拼多多月卡' },
+
+  // 9月
+  { date:'2024-09-30', type:'expense', category:'出行', amount:5.40, desc:'地铁🚇' },
+  { date:'2024-09-27', type:'expense', category:'出行', amount:4.50, desc:'地铁🚇' },
+  { date:'2024-09-28', type:'expense', category:'出行', amount:5.40, desc:'地铁🚇' },
+  { date:'2024-09-30', type:'expense', category:'零食', amount:17.20, desc:'百香果和蜜桃四季春' },
+  { date:'2024-09-30', type:'expense', category:'餐饮', amount:6.00, desc:'抄手' },
+  { date:'2024-09-29', type:'expense', category:'餐饮', amount:5.20, desc:'酸菜肉丝面卤蛋' },
+  { date:'2024-09-29', type:'expense', category:'娱乐', amount:16.69, desc:'扭扭棒' },
+  { date:'2024-09-29', type:'expense', category:'餐饮', amount:4.50, desc:'煎饺蛋挞' },
+  { date:'2024-09-27', type:'income',  category:'退款', amount:9.55, desc:'衣架少发' },
+  { date:'2024-09-27', type:'expense', category:'日用', amount:5.52, desc:'衣架' },
+  { date:'2024-09-27', type:'expense', category:'日用', amount:16.06, desc:'火锅底料' },
+  { date:'2024-09-27', type:'expense', category:'餐饮', amount:4.50, desc:'拌饺蛋挞' },
+  { date:'2024-09-27', type:'expense', category:'日用', amount:3.00, desc:'小夜灯' },
+  { date:'2024-09-27', type:'expense', category:'日用', amount:0.70, desc:'买纸' },
+  { date:'2024-09-26', type:'expense', category:'日用', amount:0.02, desc:'抽纸' },
+  { date:'2024-09-26', type:'expense', category:'日用', amount:0.21, desc:'洗澡' },
+  { date:'2024-09-26', type:'expense', category:'餐饮', amount:6.00, desc:'杂酱面' },
+  { date:'2024-09-26', type:'expense', category:'餐饮', amount:4.50, desc:'鸡肉串发糕' },
+  { date:'2024-09-25', type:'expense', category:'零食', amount:16.90, desc:'苹果汁' },
+  { date:'2024-09-25', type:'expense', category:'日用', amount:0.07, desc:'洗澡' },
+  { date:'2024-09-25', type:'expense', category:'餐饮', amount:14.00, desc:'馄饨烤冷面' },
+  { date:'2024-09-25', type:'expense', category:'日用', amount:3.25, desc:'零食夹子' },
+  { date:'2024-09-25', type:'expense', category:'零食', amount:3.64, desc:'柠檬液' },
+  { date:'2024-09-25', type:'expense', category:'餐饮', amount:4.50, desc:'蛋挞鸡肉串' },
+  { date:'2024-09-24', type:'expense', category:'餐饮', amount:6.00, desc:'绿豆椰乳冰' },
+  { date:'2024-09-24', type:'expense', category:'学习', amount:4.96, desc:'买书' },
+  { date:'2024-09-24', type:'expense', category:'日用', amount:3.10, desc:'防掉网' },
+  { date:'2024-09-24', type:'expense', category:'日用', amount:10.51, desc:'床帘' },
+  { date:'2024-09-24', type:'expense', category:'日用', amount:14.40, desc:'床头靠枕' },
+  { date:'2024-09-24', type:'expense', category:'日用', amount:13.22, desc:'衣架25个' },
+  { date:'2024-09-24', type:'expense', category:'餐饮', amount:4.50, desc:'煎饺煎蛋小包子' },
+  { date:'2024-09-23', type:'expense', category:'日用', amount:0.19, desc:'洗澡' },
+  { date:'2024-09-23', type:'expense', category:'零食', amount:16.70, desc:'苏打水' },
+  { date:'2024-09-23', type:'expense', category:'零食', amount:17.90, desc:'茶包' },
+  { date:'2024-09-23', type:'expense', category:'日用', amount:6.80, desc:'香包' },
+  { date:'2024-09-23', type:'expense', category:'学习', amount:4.82, desc:'a4纸' },
+  { date:'2024-09-23', type:'expense', category:'日用', amount:4.90, desc:'卷发筒' },
+  { date:'2024-09-23', type:'expense', category:'餐饮', amount:6.00, desc:'杂酱面' },
+  { date:'2024-09-23', type:'expense', category:'出行', amount:7.40, desc:'回家' },
+  { date:'2024-09-23', type:'expense', category:'零食', amount:19.70, desc:'可可' },
+  { date:'2024-09-23', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-09-23', type:'expense', category:'餐饮', amount:4.00, desc:'鸡肉串煎饺' },
+  { date:'2024-09-22', type:'income',  category:'卖货', amount:37.50, desc:'酸辣粉茶萃' },
+  { date:'2024-09-22', type:'expense', category:'日用', amount:18.80, desc:'泡面碗' },
+  { date:'2024-09-22', type:'expense', category:'餐饮', amount:24.70, desc:'山西刀削面' },
+  { date:'2024-09-22', type:'expense', category:'日用', amount:2.13, desc:'盘子' },
+  { date:'2024-09-21', type:'expense', category:'出行', amount:1.50, desc:'骑自行车' },
+  { date:'2024-09-21', type:'expense', category:'日用', amount:0.09, desc:'洗澡' },
+  { date:'2024-09-22', type:'expense', category:'日用', amount:3.62, desc:'玻璃杯' },
+  { date:'2024-09-22', type:'expense', category:'零食', amount:3.00, desc:'冰糕' },
+  { date:'2024-09-21', type:'expense', category:'日用', amount:7.00, desc:'隔板' },
+  { date:'2024-09-21', type:'expense', category:'日用', amount:7.60, desc:'地垫' },
+  { date:'2024-09-21', type:'expense', category:'餐饮', amount:7.50, desc:'烤肠墨鱼丸' },
+  { date:'2024-09-20', type:'expense', category:'日用', amount:7.98, desc:'刀叉勺' },
+  { date:'2024-09-20', type:'expense', category:'零食', amount:39.50, desc:'统一布丁' },
+  { date:'2024-09-20', type:'expense', category:'学习', amount:35.00, desc:'四级报名' },
+  { date:'2024-09-20', type:'expense', category:'日用', amount:0.06, desc:'洗澡' },
+  { date:'2024-09-20', type:'income',  category:'卖货', amount:36.70, desc:'茶萃' },
+  { date:'2024-09-20', type:'expense', category:'餐饮', amount:8.00, desc:'抄手' },
+  { date:'2024-09-20', type:'expense', category:'餐饮', amount:9.80, desc:'卤肉土豆泥拌饭' },
+  { date:'2024-09-18', type:'expense', category:'日用', amount:0.06, desc:'洗澡' },
+  { date:'2024-09-19', type:'expense', category:'日用', amount:0.18, desc:'洗澡' },
+  { date:'2024-09-19', type:'expense', category:'餐饮', amount:3.50, desc:'火腿肠' },
+  { date:'2024-09-19', type:'expense', category:'餐饮', amount:14.30, desc:'猪肘饭' },
+  { date:'2024-09-18', type:'expense', category:'出行', amount:1.50, desc:'哈罗单车' },
+  { date:'2024-09-17', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-09-16', type:'expense', category:'出行', amount:5.40, desc:'地铁' },
+  { date:'2024-09-18', type:'income',  category:'同学', amount:9.00, desc:'卖火腿肠' },
+  { date:'2024-09-17', type:'expense', category:'水果', amount:11.00, desc:'橘子' },
+  { date:'2024-09-17', type:'expense', category:'日用', amount:6.55, desc:'粉色铁艺篮' },
+  { date:'2024-09-17', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-09-16', type:'income',  category:'妈妈', amount:300.00, desc:'烧烤钱' },
+  { date:'2024-09-16', type:'expense', category:'餐饮', amount:173.00, desc:'烧烤' },
+  { date:'2024-09-16', type:'expense', category:'餐饮', amount:14.50, desc:'丸子豆腐炒饭百香果' },
+  { date:'2024-09-16', type:'expense', category:'日用', amount:9.90, desc:'卷纸' },
+  { date:'2024-09-15', type:'expense', category:'日用', amount:4.29, desc:'洗碗擦' },
+  { date:'2024-09-15', type:'expense', category:'日用', amount:0.09, desc:'洗澡' },
+  { date:'2024-09-15', type:'expense', category:'日用', amount:0.98, desc:'洗洁精' },
+  { date:'2024-09-15', type:'expense', category:'餐饮', amount:12.00, desc:'杂酱拌面西瓜' },
+  { date:'2024-09-15', type:'expense', category:'餐饮', amount:7.20, desc:'肥肠面卤蛋' },
+  { date:'2024-09-15', type:'expense', category:'日用', amount:25.86, desc:'收纳' },
+  { date:'2024-09-14', type:'expense', category:'零食', amount:34.99, desc:'雀巢茶萃' },
+  { date:'2024-09-14', type:'expense', category:'日用', amount:0.19, desc:'洗澡' },
+  { date:'2024-09-14', type:'expense', category:'日用', amount:440.00, desc:'医保' },
+  { date:'2024-09-14', type:'expense', category:'餐饮', amount:8.00, desc:'花菜炒肉刀削面绿豆沙' },
+  { date:'2024-09-14', type:'expense', category:'餐饮', amount:7.20, desc:'肥肠面卤蛋' },
+  { date:'2024-09-13', type:'expense', category:'日用', amount:0.10, desc:'洗澡' },
+  { date:'2024-09-14', type:'expense', category:'日用', amount:4.77, desc:'三把小刀' },
+  { date:'2024-09-13', type:'expense', category:'餐饮', amount:8.00, desc:'抄手' },
+  { date:'2024-09-13', type:'expense', category:'游戏', amount:3.00, desc:'我的休闲时光' },
+  { date:'2024-09-13', type:'expense', category:'零食', amount:13.20, desc:'海苔小麻花' },
+  { date:'2024-09-13', type:'expense', category:'餐饮', amount:4.00, desc:'双拼豆芽' },
+  { date:'2024-09-13', type:'expense', category:'餐饮', amount:4.00, desc:'鸡肉串煎饺' },
+  { date:'2024-09-12', type:'expense', category:'餐饮', amount:8.00, desc:'无糖豆浆花菜炒肉面条' },
+  { date:'2024-09-12', type:'expense', category:'零食', amount:8.08, desc:'蛋酥' },
+  { date:'2024-09-12', type:'expense', category:'餐饮', amount:8.50, desc:'麻婆豆腐花菜刀削面绿豆沙' },
+  { date:'2024-09-12', type:'expense', category:'餐饮', amount:6.50, desc:'牛奶鸡肉串紫米糕' },
+  { date:'2024-09-11', type:'expense', category:'日用', amount:0.05, desc:'洗澡' },
+  { date:'2024-09-11', type:'expense', category:'餐饮', amount:6.50, desc:'双拼龟苓膏' },
+  { date:'2024-09-11', type:'expense', category:'零食', amount:6.50, desc:'月饼' },
+  { date:'2024-09-11', type:'expense', category:'餐饮', amount:5.50, desc:'双拼意面' },
+  { date:'2024-09-11', type:'expense', category:'餐饮', amount:5.50, desc:'蛋挞面包片紫米糕' },
+  { date:'2024-09-10', type:'expense', category:'餐饮', amount:12.80, desc:'叉烧饭（报吃）' },
+  { date:'2024-09-10', type:'expense', category:'餐饮', amount:5.00, desc:'双拼粉条' },
+  { date:'2024-09-10', type:'expense', category:'餐饮', amount:4.50, desc:'鸡肉串发糕' },
+  { date:'2024-09-10', type:'expense', category:'日用', amount:0.14, desc:'洗头洗澡' },
+  { date:'2024-09-09', type:'expense', category:'餐饮', amount:6.50, desc:'双拼蘑菇炒肉' },
+  { date:'2024-09-09', type:'expense', category:'餐饮', amount:5.00, desc:'双拼猪肉炖粉条' },
+  { date:'2024-09-09', type:'expense', category:'餐饮', amount:8.00, desc:'土豆饼煎饺牛奶' },
+  { date:'2024-09-09', type:'expense', category:'日用', amount:0.08, desc:'洗澡' },
+  { date:'2024-09-11', type:'expense', category:'日用', amount:25.80, desc:'体重秤' },
+  { date:'2024-09-10', type:'expense', category:'日用', amount:2.91, desc:'挂钩' },
+  { date:'2024-09-09', type:'expense', category:'日用', amount:8.88, desc:'支架' },
+  { date:'2024-09-09', type:'expense', category:'日用', amount:4.15, desc:'收纳盒' },
+  { date:'2024-09-03', type:'expense', category:'餐饮', amount:18.00, desc:'土豆烧牛肉' },
+  { date:'2024-09-10', type:'expense', category:'零食', amount:10.80, desc:'玉米肠' },
+  { date:'2024-09-10', type:'expense', category:'零食', amount:37.68, desc:'椰奶+麦片' },
+  { date:'2024-09-10', type:'expense', category:'零食', amount:19.80, desc:'筋头巴脑' },
+  { date:'2024-09-10', type:'expense', category:'日用', amount:15.90, desc:'陶瓷杯' },
+  { date:'2024-09-10', type:'expense', category:'日用', amount:3.00, desc:'充电宝' },
+  { date:'2024-09-09', type:'expense', category:'餐饮', amount:49.90, desc:'牛奶' },
+  { date:'2024-09-09', type:'expense', category:'日用', amount:29.40, desc:'灯' },
+  { date:'2024-09-09', type:'income',  category:'妈妈', amount:500.00, desc:'生活费' },
+  { date:'2024-09-09', type:'expense', category:'零食', amount:8.00, desc:'奶茶' },
+  { date:'2024-09-09', type:'income',  category:'退款', amount:7.00, desc:'代雨晴忘记收了' },
+  { date:'2024-09-08', type:'expense', category:'餐饮', amount:10.00, desc:'炒饭土豆豆腐烧肉' },
+  { date:'2024-09-08', type:'expense', category:'餐饮', amount:10.50, desc:'双拼粉条冰粉' },
+  { date:'2024-09-08', type:'expense', category:'餐饮', amount:4.50, desc:'烧麦饺子' },
+  { date:'2024-09-08', type:'expense', category:'日用', amount:0.08, desc:'洗澡' },
+  { date:'2024-09-07', type:'expense', category:'餐饮', amount:6.66, desc:'双拼青菜茄子炒肉' },
+  { date:'2024-09-07', type:'expense', category:'餐饮', amount:8.00, desc:'抄手' },
+  { date:'2024-09-07', type:'expense', category:'餐饮', amount:4.00, desc:'牛奶花卷' },
+  { date:'2024-09-07', type:'expense', category:'日用', amount:0.21, desc:'洗头洗澡' },
+  { date:'2024-09-08', type:'expense', category:'日用', amount:7.14, desc:'垃圾袋' },
+  { date:'2024-09-08', type:'expense', category:'餐饮', amount:7.00, desc:'奶茶' },
+  { date:'2024-09-07', type:'expense', category:'零食', amount:7.79, desc:'海苔小麻花' },
+  { date:'2024-09-07', type:'expense', category:'娱乐', amount:10.00, desc:'晋江' },
+  { date:'2024-09-07', type:'expense', category:'餐饮', amount:16.20, desc:'班费奶茶' },
+  { date:'2024-09-06', type:'expense', category:'日用', amount:0.08, desc:'洗澡' },
+  { date:'2024-09-06', type:'expense', category:'餐饮', amount:6.00, desc:'肥肠面' },
+  { date:'2024-09-06', type:'expense', category:'餐饮', amount:6.66, desc:'双拼藕片炒肉' },
+  { date:'2024-09-03', type:'expense', category:'日用', amount:0.06, desc:'洗澡' },
+  { date:'2024-09-06', type:'expense', category:'日用', amount:3.80, desc:'垃圾桶' },
+  { date:'2024-09-06', type:'expense', category:'出行', amount:9.70, desc:'骑车加买卡' },
+  { date:'2024-09-05', type:'expense', category:'出行', amount:5.90, desc:'自行车' },
+  { date:'2024-09-03', type:'expense', category:'日用', amount:5.52, desc:'衣架' },
+  { date:'2024-09-06', type:'expense', category:'日用', amount:9.90, desc:'洗衣液' },
+  { date:'2024-09-06', type:'expense', category:'日用', amount:12.00, desc:'打印照片' },
+  { date:'2024-09-06', type:'expense', category:'学习', amount:44.00, desc:'买书' },
+  { date:'2024-09-05', type:'expense', category:'日用', amount:9.41, desc:'发箍' },
+  { date:'2024-09-05', type:'expense', category:'日用', amount:50.00, desc:'饮水机加水' },
+  { date:'2024-09-05', type:'expense', category:'餐饮', amount:8.16, desc:'双拼河粉龟苓膏' },
+  { date:'2024-09-05', type:'expense', category:'餐饮', amount:3.10, desc:'豆浆油条紫米糕' },
+  { date:'2024-09-04', type:'expense', category:'餐饮', amount:4.00, desc:'两个粑粑' },
+  { date:'2024-09-04', type:'expense', category:'日用', amount:25.00, desc:'平摊电费' },
+  { date:'2024-09-04', type:'expense', category:'餐饮', amount:10.00, desc:'肥肠面➕龟苓膏' },
+  { date:'2024-09-03', type:'expense', category:'社交', amount:68.50, desc:'借别人' },
+  { date:'2024-09-03', type:'income',  category:'妈妈', amount:600.00, desc:'生活费' },
+  { date:'2024-08-28', type:'expense', category:'日用', amount:473.77, desc:'开学准备' },
+  { date:'2024-09-04', type:'expense', category:'日用', amount:6.19, desc:'绳子' },
+  { date:'2024-09-04', type:'expense', category:'日用', amount:60.10, desc:'洗脸巾' },
+  { date:'2024-09-03', type:'income',  category:'退款', amount:70.00, desc:'借别人校园卡' },
+  { date:'2024-09-03', type:'expense', category:'餐饮', amount:2.00, desc:'矿泉水' },
+  { date:'2024-09-02', type:'expense', category:'出行', amount:7.00, desc:'三轮车' },
+  { date:'2024-09-01', type:'income',  category:'妈妈', amount:204.00, desc:'存钱利息' },
+
+  // 8月
+  { date:'2024-08-31', type:'expense', category:'游戏', amount:30.00, desc:'我的休闲时光' },
+  { date:'2024-08-30', type:'expense', category:'游戏', amount:30.00, desc:'我的休闲时光' },
+  { date:'2024-08-30', type:'expense', category:'日用', amount:3.00, desc:'买挂钩' },
+  { date:'2024-08-29', type:'expense', category:'游戏', amount:12.00, desc:'我的休闲时光' },
+  { date:'2024-08-28', type:'income',  category:'退款', amount:0.74, desc:'充电退款' },
+  { date:'2024-08-28', type:'expense', category:'出行', amount:3.00, desc:'充电' },
+  { date:'2024-08-28', type:'income',  category:'退款', amount:23.90, desc:'奶茶退款' },
+  { date:'2024-08-28', type:'expense', category:'游戏', amount:53.70, desc:'奶茶' },
+  { date:'2024-08-27', type:'expense', category:'游戏', amount:7.00, desc:'我的休闲时光' },
+  { date:'2024-08-27', type:'expense', category:'游戏', amount:1.00, desc:'第五人格' },
+  { date:'2024-08-25', type:'expense', category:'日用', amount:200.00, desc:'办卡' },
+  { date:'2024-08-25', type:'expense', category:'日用', amount:3.37, desc:'买管子' },
+  { date:'2024-08-25', type:'income',  category:'妈妈', amount:600.00, desc:'' },
+  { date:'2024-08-24', type:'expense', category:'餐饮', amount:332.00, desc:'蘑菇' },
+  { date:'2024-08-14', type:'expense', category:'日用', amount:0.50, desc:'快递' },
+  { date:'2024-08-23', type:'income',  category:'红包', amount:1.88, desc:'爸' },
+  { date:'2024-08-23', type:'expense', category:'学习', amount:7670.40, desc:'学费' },
+  { date:'2024-08-20', type:'expense', category:'数码', amount:4.90, desc:'给老爹买手机壳' },
+  { date:'2024-08-19', type:'income',  category:'妈妈', amount:800.00, desc:'' },
+  { date:'2024-08-19', type:'income',  category:'红包', amount:305.97, desc:'我爸' },
+  { date:'2024-08-19', type:'expense', category:'日用', amount:13.00, desc:'买醋和料酒' },
+  { date:'2024-08-19', type:'expense', category:'餐饮', amount:21.00, desc:'小锅米线' },
+  { date:'2024-08-18', type:'expense', category:'水果', amount:17.00, desc:'一个大西瓜' },
+  { date:'2024-08-18', type:'expense', category:'餐饮', amount:2.00, desc:'蜜雪冰城冰淇淋' },
+  { date:'2024-08-17', type:'expense', category:'餐饮', amount:21.00, desc:'早餐米线' },
+  { date:'2024-08-16', type:'expense', category:'餐饮', amount:39.00, desc:'面包' },
+  { date:'2024-08-16', type:'expense', category:'日用', amount:110.00, desc:'买纸' },
+  { date:'2024-08-16', type:'income',  category:'妈妈', amount:1000.00, desc:'' },
+  { date:'2024-08-14', type:'expense', category:'出行', amount:12.22, desc:'坐车' },
+  { date:'2024-08-11', type:'expense', category:'日用', amount:150.00, desc:'买水' },
+  { date:'2024-08-11', type:'expense', category:'社交', amount:18.54, desc:'给刘宏宇买礼物' },
+  { date:'2024-08-10', type:'income',  category:'妈妈', amount:3000.00, desc:'升学宴' },
+  { date:'2024-08-10', type:'expense', category:'日用', amount:50.00, desc:'花' },
+  { date:'2024-08-10', type:'expense', category:'餐饮', amount:22.00, desc:'羊肉粉' },
+  { date:'2024-08-10', type:'expense', category:'社交', amount:200.00, desc:'给妈妈的' },
+  { date:'2024-08-10', type:'income',  category:'退款', amount:520.00, desc:'妈妈退的' },
+  { date:'2024-08-09', type:'income',  category:'红包', amount:0.01, desc:'骗子红包' },
+  { date:'2024-08-09', type:'expense', category:'社交', amount:200.00, desc:'给姐姐' },
+  { date:'2024-08-09', type:'expense', category:'社交', amount:125.00, desc:'给姐姐的买烟钱' },
+  { date:'2024-08-09', type:'income',  category:'退款', amount:520.00, desc:'姐姐退' },
+  { date:'2024-08-09', type:'expense', category:'社交', amount:1040.00, desc:'给姐姐和妈妈' },
+  { date:'2024-08-09', type:'expense', category:'社交', amount:7460.00, desc:'升学宴' },
+  { date:'2024-08-09', type:'income',  category:'妈妈', amount:7000.00, desc:'转来买单' },
+  { date:'2024-08-09', type:'income',  category:'红包', amount:1600.00, desc:'圆姐小张嬢嬢' },
+  { date:'2024-08-09', type:'expense', category:'餐饮', amount:28.00, desc:'蜜雪冰城' },
+  { date:'2024-08-09', type:'expense', category:'餐饮', amount:19.00, desc:'早饭' },
+  { date:'2024-08-08', type:'income',  category:'红包', amount:400.00, desc:'老爷' },
+  { date:'2024-08-08', type:'expense', category:'餐饮', amount:480.00, desc:'酒' },
+  { date:'2024-08-08', type:'expense', category:'日用', amount:163.00, desc:'办席瓜子' },
+  { date:'2024-08-08', type:'expense', category:'餐饮', amount:38.00, desc:'小锅米线' },
+  { date:'2024-08-07', type:'expense', category:'存钱', amount:10000.00, desc:'' },
+  { date:'2024-08-07', type:'income',  category:'妈妈', amount:1200.00, desc:'小姨' },
+  { date:'2024-08-07', type:'income',  category:'红包', amount:3.54, desc:'' },
+  { date:'2024-08-07', type:'income',  category:'妈妈', amount:6000.00, desc:'幺老爹' },
+  { date:'2024-08-06', type:'income',  category:'退款', amount:0.42, desc:'美团送的' },
+  { date:'2024-08-06', type:'expense', category:'日用', amount:16.00, desc:'快递' },
+  { date:'2024-08-04', type:'expense', category:'餐饮', amount:2.00, desc:'冰淇淋' },
+  { date:'2024-08-03', type:'expense', category:'社交', amount:112.92, desc:'办席 饮料' },
+  { date:'2024-08-03', type:'income',  category:'妈妈', amount:10.00, desc:'和老爹下象棋' },
+  { date:'2024-08-01', type:'expense', category:'零食', amount:2.00, desc:'第五人格租号' },
+  { date:'2024-08-03', type:'expense', category:'日用', amount:0.50, desc:'快递费' },
+  { date:'2024-08-02', type:'expense', category:'游戏', amount:18.00, desc:'我的休闲时光' },
+  { date:'2024-08-02', type:'expense', category:'游戏', amount:22.00, desc:'我的休闲时光' },
+  { date:'2024-08-02', type:'expense', category:'数码', amount:99.80, desc:'话费' },
+  { date:'2024-08-02', type:'expense', category:'水果', amount:7.50, desc:'给我姐买香蕉' },
+  { date:'2024-08-01', type:'expense', category:'餐饮', amount:16.80, desc:'钵钵鸡调料' },
+
+  // 7月
+  { date:'2024-07-31', type:'expense', category:'游戏', amount:1.00, desc:'我的休闲时光' },
+  { date:'2024-07-29', type:'expense', category:'游戏', amount:36.00, desc:'第五人格' },
+  { date:'2024-07-28', type:'expense', category:'餐饮', amount:367.00, desc:'请何叔叔吃饭' },
+  { date:'2024-07-28', type:'expense', category:'餐饮', amount:13.00, desc:'蜜雪冰城冰淇淋和百香果' },
+  { date:'2024-07-28', type:'expense', category:'社交', amount:44.00, desc:'给老文买葡萄' },
+  { date:'2024-07-28', type:'expense', category:'出行', amount:16.98, desc:'打车' },
+  { date:'2024-07-28', type:'income',  category:'红包', amount:30.80, desc:'' },
+  { date:'2024-07-28', type:'expense', category:'日用', amount:66.00, desc:'红包' },
+  { date:'2024-07-28', type:'expense', category:'出行', amount:15.00, desc:'出租车' },
+  { date:'2024-07-28', type:'expense', category:'游戏', amount:30.00, desc:'我的休闲时光' },
+  { date:'2024-07-27', type:'income',  category:'妈妈', amount:5000.00, desc:'何叔叔' },
+  { date:'2024-07-26', type:'expense', category:'餐饮', amount:60.00, desc:'肥肠加豆花' },
+  { date:'2024-07-26', type:'income',  category:'妈妈', amount:200.00, desc:'' },
+  { date:'2024-07-26', type:'expense', category:'餐饮', amount:2.00, desc:'矿泉水' },
+  { date:'2024-07-26', type:'expense', category:'餐饮', amount:22.00, desc:'羊肉粉两碗' },
+  { date:'2024-07-25', type:'expense', category:'社交', amount:8.00, desc:'雪碧 张鑫家聚餐' },
+  { date:'2024-07-22', type:'expense', category:'学习', amount:38.20, desc:'高数课本' },
+  { date:'2024-07-20', type:'expense', category:'游戏', amount:6.00, desc:'我的休闲时光' },
+  { date:'2024-07-19', type:'income',  category:'退款', amount:0.10, desc:'电瓶车充电退款' },
+  { date:'2024-07-18', type:'expense', category:'日用', amount:3.00, desc:'电瓶车充电' },
+  { date:'2024-07-19', type:'expense', category:'游戏', amount:28.00, desc:'我的休闲时光' },
+  { date:'2024-07-06', type:'income',  category:'妈妈', amount:14.84, desc:'字帖退款' },
+  { date:'2024-07-17', type:'expense', category:'游戏', amount:7.00, desc:'我的休闲时光' },
+  { date:'2024-07-14', type:'expense', category:'游戏', amount:12.00, desc:'我的休闲时光' },
+  { date:'2024-07-05', type:'income',  category:'退款', amount:9.90, desc:'pdd字帖' },
+  { date:'2024-07-05', type:'expense', category:'学习', amount:9.90, desc:'字帖' },
+  { date:'2024-07-11', type:'expense', category:'餐饮', amount:14.80, desc:'pdd买豌豆凉粉' },
+  { date:'2024-07-11', type:'income',  category:'姐姐', amount:88.00, desc:'老姐转来买米' },
+  { date:'2024-07-11', type:'expense', category:'蔬菜', amount:72.90, desc:'天天超市买米' },
+  { date:'2024-07-09', type:'expense', category:'餐饮', amount:59.00, desc:'老冬瓜烧烤' },
+  { date:'2024-07-09', type:'expense', category:'游戏', amount:6.00, desc:'我的休闲时光' },
+  { date:'2024-07-09', type:'expense', category:'学习', amount:660.00, desc:'舞蹈课缴费' },
+  { date:'2024-07-08', type:'income',  category:'妈妈', amount:1000.00, desc:'舞蹈课费用' },
+  { date:'2024-07-08', type:'income',  category:'妈妈', amount:1000.00, desc:'' },
+  { date:'2024-07-07', type:'expense', category:'游戏', amount:18.00, desc:'我的休闲时光' },
+  { date:'2024-07-06', type:'expense', category:'零食', amount:49.99, desc:'话费' },
+  { date:'2024-07-06', type:'expense', category:'游戏', amount:10.00, desc:'我的休闲时光' },
+  { date:'2024-07-03', type:'expense', category:'日用', amount:2.08, desc:'穿针器两个' },
+  { date:'2024-07-03', type:'expense', category:'水果', amount:17.00, desc:'半个大西瓜' },
+  { date:'2024-07-03', type:'expense', category:'餐饮', amount:12.00, desc:'漏漏凉粉和米凉粉' },
+  { date:'2024-07-03', type:'income',  category:'同学', amount:13.00, desc:'010还我的' },
+  { date:'2024-07-03', type:'expense', category:'社交', amount:13.00, desc:'给010寄快递' }
+];
+
+// ==================== 页面初始化 ====================
+const activeBookId = getActiveBookId();
+document.getElementById('bookName').textContent = getBookName(activeBookId);
+document.getElementById('pendingCount').textContent = IMPORT_DATA.length + ' 条';
+
+// ==================== 导入逻辑 ====================
+function doImport() {
+  const btn = document.getElementById('importBtn');
+  btn.disabled = true;
+  btn.textContent = '导入中…';
+
+  try {
+    const bookId = getActiveBookId();
+
+    // 读取当前账本已有的记录
+    let expenses = getRecords('expense', bookId);
+    let incomes = getRecords('income', bookId);
+
+    // 建立已有记录的签名集合，用于去重
+    const existingSigs = new Set();
+    expenses.forEach(r => {
+      const d = new Date(r.timestamp);
+      const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      existingSigs.add(makeSignature('expense', r.category, r.amount, r.desc, ds));
+    });
+    incomes.forEach(r => {
+      const d = new Date(r.timestamp);
+      const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      existingSigs.add(makeSignature('income', r.category, r.amount, r.desc, ds));
+    });
+
+    // 分类集合（用于自动补新分类）
+    const expCats = new Set(getCategories('expense', bookId));
+    const incCats = new Set(getCategories('income', bookId));
+
+    let addedExp = 0, addedInc = 0, skipped = 0;
+    let idCounter = Date.now();
+
+    IMPORT_DATA.forEach(item => {
+      const type = item.type; // 'expense' 或 'income'
+      const sig = makeSignature(type, item.category, item.amount, item.desc, item.date);
+
+      // 已存在则跳过
+      if (existingSigs.has(sig)) {
+        skipped++;
+        return;
+      }
+
+      // 构造时间戳
+      const parts = item.date.split('-');
+      const timestamp = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0).getTime();
+
+      const record = {
+        id: (idCounter++) + '-' + Math.random().toString(36).slice(2, 6),
+        category: item.category,
+        amount: Number(item.amount),
+        desc: item.desc || '',
+        timestamp
+      };
+
+      if (type === 'income') {
+        incomes.push(record);
+        incCats.add(item.category);
+        addedInc++;
+      } else {
+        expenses.push(record);
+        expCats.add(item.category);
+        addedExp++;
+      }
+      existingSigs.add(sig);
+    });
+
+    // 保存
+    saveRecords('expense', bookId, expenses);
+    saveRecords('income', bookId, incomes);
+    saveCategories('expense', bookId, Array.from(expCats));
+    saveCategories('income', bookId, Array.from(incCats));
+
+    const resultEl = document.getElementById('result');
+    resultEl.className = 'result ok';
+    resultEl.innerHTML = `
+      <strong>✅ 导入完成！</strong><br>
+      新增支出：<strong>${addedExp}</strong> 条<br>
+      新增收入：<strong>${addedInc}</strong> 条<br>
+      跳过重复：<strong>${skipped}</strong> 条<br><br>
+      请关闭本页面，打开记账本查看。
+    `;
+    btn.textContent = '已导入';
+  } catch(err) {
+    const resultEl = document.getElementById('result');
+    resultEl.className = 'result err';
+    resultEl.innerHTML = `<strong>❌ 导入失败</strong><br>${err.message}`;
+    btn.disabled = false;
+    btn.textContent = '重新导入';
+  }
+}
+</script>
+</body>
+</html>
