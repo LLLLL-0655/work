@@ -2390,11 +2390,7 @@ function doImport() {
       const type = item.type; // 'expense' 或 'income'
       const sig = makeSignature(type, item.category, item.amount, item.desc, item.date);
 
-      // 已存在则跳过
-      if (existingSigs.has(sig)) {
-        skipped++;
-        return;
-      }
+
 
       // 构造时间戳
       const parts = item.date.split('-');
